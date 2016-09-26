@@ -5,22 +5,30 @@ import (
 	"io/ioutil"
 	"log"
 	"math/rand"
+	"net"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/radovskyb/process"
 )
 
-var upgrader = websocket.Upgrader{}
-var rpTemplate = template.Must(template.New("rpTemplate").Parse(rpTemplateSrc))
-var watcher = make(chan struct{})
+var (
+	rpTemplate = template.Must(template.New("rpTemplate").Parse(rpTemplateSrc))
+	upgrader   = websocket.Upgrader{}
+	watcher    = make(chan struct{})
 
-var address = "http://localhost:9001"
-var serverAddr = "http://localhost:9000"
-var dir = "/Users/Benjamin/Workspace/go/src/github.com/radovskyb/reloadproxy/testserver"
+	socketAddr string
+	address    = "http://localhost:9001"
+	serverAddr = "http://localhost:9000"
+	dir        = "/Users/Benjamin/Workspace/go/src/github.com/radovskyb/reloadproxy/testserver"
 
-var socketAddr string
+	restartServer bool
+	serverProcess *process.Process
+)
 
 func main() {
 	// Seed the random generator.
@@ -37,7 +45,7 @@ func main() {
 
 	listenAddr := strings.SplitAfter(address, "://")[1]
 
-	http.HandleFunc("/reloadproxy/", func(w http.ResponseWriter, r *http.Request) {
+	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		data := struct {
 			SocketAddr string
 			Address    string
@@ -45,14 +53,14 @@ func main() {
 		}{
 			SocketAddr: socketAddr,
 			Address:    listenAddr,
-			Path:       strings.TrimPrefix(r.URL.Path, "/reloadproxy/"),
+			Path:       strings.TrimPrefix(r.URL.Path, "/"),
 		}
 		if err := rpTemplate.Execute(w, data); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 		}
 	})
 
-	http.HandleFunc("/reloadproxy/"+socketAddr+"/", ReloadProxyHandler)
+	http.HandleFunc("/"+socketAddr+"/", ReloadProxyHandler)
 
 	go startWatching(watcher)
 
@@ -79,7 +87,7 @@ func ReloadProxyHandler(w http.ResponseWriter, r *http.Request) {
 	}(conn)
 
 	go func(conn *websocket.Conn) {
-		path := strings.TrimPrefix(r.URL.Path, "/reloadproxy/"+socketAddr)
+		path := strings.TrimPrefix(r.URL.Path, "/"+socketAddr)
 
 		// Write the page the first time it's visited.
 		err := conn.WriteMessage(websocket.TextMessage, getPage(serverAddr+path))
@@ -107,47 +115,43 @@ func startWatching(watcher chan struct{}) {
 	// Show the page for the first time.
 	watcher <- struct{}{}
 
-	files, err := ioutil.ReadDir(dir)
-	if err != nil {
-		log.Fatalln(err)
-	}
-	numFiles := len(files)
-	for {
-		time.Sleep(time.Second)
+	files := []os.FileInfo{}
 
-		// Check if the number of files is different.
-		files, err = ioutil.ReadDir(dir)
-		if err != nil {
+	for {
+		newfiles := []os.FileInfo{}
+		if err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+			newfiles = append(newfiles, info)
+			return nil
+		}); err != nil {
 			log.Fatalln(err)
 		}
-		if len(files) != numFiles {
-			// Reload the page.
+
+		if len(files) != len(newfiles) {
+			files = newfiles
 			watcher <- struct{}{}
-
-			// Update numFiles to be len(files)
-			numFiles = len(files)
-
-			// Continue the file watching loop.
-			continue
+		} else {
+			for i, newfile := range newfiles {
+				if newfile.ModTime() != files[i].ModTime() {
+					files = newfiles
+					watcher <- struct{}{}
+				}
+			}
 		}
 
-		// 		// Run a simple filepath.Walk and check if any files have been changed
-		// 		// or modified.
-		// 		if err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
-		// add to map so can check again after.
-		// 			return nil
-		// 		}); err != nil {
-		// 			errc <- err
-		// 		}
-		// 		watcher <- struct{}{}
-		// time.Sleep(time.Second)
+		time.Sleep(time.Second * 1)
 	}
 }
 
 func getPage(path string) []byte {
+GET:
 	res, err := http.Get(path)
 	if err != nil {
-		return []byte(err.Error())
+		if _, ok := err.(*net.AddrError); ok {
+			return []byte(err.Error())
+		}
+		// If it's not an address error, sleep for a bit then try again.
+		time.Sleep(500 * time.Millisecond)
+		goto GET
 	}
 	defer res.Body.Close()
 	slurp, err := ioutil.ReadAll(res.Body)
@@ -161,7 +165,7 @@ const rpTemplateSrc = `<!DOCTYPE html><html><head>
 <meta charset="UTF-8"> <title>Reload Proxy</title>
 <script src="https://code.jquery.com/jquery-3.1.1.min.js"></script><script>
 $(document).ready(function() {
-	var ws = new WebSocket("ws://{{.Address}}/reloadproxy/{{.SocketAddr}}/{{.Path}}");
+	var ws = new WebSocket("ws://{{.Address}}/{{.SocketAddr}}/{{.Path}}");
 	ws.onmessage = function(e) {
 		$("body").html(e.data);
 	};
