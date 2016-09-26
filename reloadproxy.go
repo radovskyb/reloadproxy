@@ -1,6 +1,8 @@
 package main
 
 import (
+	"flag"
+	"fmt"
 	"html/template"
 	"io/ioutil"
 	"log"
@@ -8,12 +10,15 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
+	"syscall"
 	"time"
 
 	"github.com/gorilla/websocket"
-	"github.com/radovskyb/process"
 )
 
 var (
@@ -21,16 +26,31 @@ var (
 	upgrader   = websocket.Upgrader{}
 	watcher    = make(chan struct{})
 
-	socketAddr string
-	address    = "http://localhost:9001"
-	serverAddr = "http://localhost:9000"
-	dir        = "/Users/Benjamin/Workspace/go/src/github.com/radovskyb/reloadproxy/testserver"
+	serverFile, socketAddr, serverAddr, address, dir string
 
-	restartServer bool
-	serverProcess *process.Process
+	cmd *exec.Cmd
 )
 
 func main() {
+	flag.StringVar(&serverFile, "file", "", "the location of the Go server file")
+	flag.StringVar(&dir, "dir", "", "the directory to watch for changes (default is the server's directory)")
+	flag.StringVar(&address, "addr", "http://localhost:9001",
+		"the address to run reloadproxy")
+	flag.StringVar(&serverAddr, "server", "http://localhost:9000",
+		"the address where the server is set to run")
+	flag.Parse()
+
+	if serverFile == "" {
+		fmt.Println("Enter the location of the Go server file. (e.g. main.go)\n")
+		flag.PrintDefaults()
+		fmt.Println()
+		os.Exit(1)
+	}
+
+	if dir == "" {
+		dir = filepath.Dir(serverFile)
+	}
+
 	// Seed the random generator.
 	rand.Seed(time.Now().UnixNano())
 
@@ -62,9 +82,74 @@ func main() {
 
 	http.HandleFunc("/"+socketAddr+"/", ReloadProxyHandler)
 
-	go startWatching(watcher)
+	// Start reloadproxy's server
+	wg := new(sync.WaitGroup)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		log.Fatal(http.ListenAndServe(listenAddr, nil))
+	}()
 
-	log.Fatal(http.ListenAndServe(listenAddr, nil))
+	// Start the regular server.
+	startServer()
+
+	c := make(chan os.Signal)
+	signal.Notify(c, os.Kill, os.Interrupt)
+	go func() {
+		<-c
+		killServer()
+		os.Exit(1)
+	}()
+
+	// Start reloadproxy's watcher.
+	done := make(chan struct{})
+	go startWatching(watcher, cmd, done)
+	<-done
+
+	wg.Wait()
+}
+
+func startWatching(watcher chan struct{}, cmd *exec.Cmd, done chan struct{}) {
+	first := true
+
+	// Show the page for the first time.
+	watcher <- struct{}{}
+
+	files := []os.FileInfo{}
+
+	for {
+		newfiles := []os.FileInfo{}
+		if err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+			newfiles = append(newfiles, info)
+			return nil
+		}); err != nil {
+			log.Fatalln(err)
+		}
+
+		if len(files) != len(newfiles) {
+			files = newfiles
+			if !first {
+				// Restart the server.
+				restartServer()
+			} else {
+				first = false
+			}
+			watcher <- struct{}{}
+		} else {
+			for i, newfile := range newfiles {
+				if newfile.ModTime() != files[i].ModTime() {
+					// Restart the server.
+					restartServer()
+					files = newfiles
+					watcher <- struct{}{}
+				}
+			}
+		}
+
+		time.Sleep(time.Second * 1)
+	}
+
+	close(done)
 }
 
 func ReloadProxyHandler(w http.ResponseWriter, r *http.Request) {
@@ -111,37 +196,6 @@ func ReloadProxyHandler(w http.ResponseWriter, r *http.Request) {
 	}(conn)
 }
 
-func startWatching(watcher chan struct{}) {
-	// Show the page for the first time.
-	watcher <- struct{}{}
-
-	files := []os.FileInfo{}
-
-	for {
-		newfiles := []os.FileInfo{}
-		if err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
-			newfiles = append(newfiles, info)
-			return nil
-		}); err != nil {
-			log.Fatalln(err)
-		}
-
-		if len(files) != len(newfiles) {
-			files = newfiles
-			watcher <- struct{}{}
-		} else {
-			for i, newfile := range newfiles {
-				if newfile.ModTime() != files[i].ModTime() {
-					files = newfiles
-					watcher <- struct{}{}
-				}
-			}
-		}
-
-		time.Sleep(time.Second * 1)
-	}
-}
-
 func getPage(path string) []byte {
 GET:
 	res, err := http.Get(path)
@@ -159,6 +213,28 @@ GET:
 		return []byte(err.Error())
 	}
 	return slurp
+}
+
+func startServer() {
+	cmd = exec.Command("go", "run", serverFile)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Start(); err != nil {
+		log.Fatalln(err)
+	}
+}
+
+func killServer() {
+	if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); err != nil {
+		log.Fatalln(err)
+	}
+}
+
+func restartServer() {
+	killServer()
+	startServer()
 }
 
 const rpTemplateSrc = `<!DOCTYPE html><html><head>
