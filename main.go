@@ -28,6 +28,8 @@ var (
 
 	serverFile, socketAddr, serverAddr, address, dir string
 
+	interval int
+
 	cmd *exec.Cmd
 )
 
@@ -38,6 +40,7 @@ func main() {
 		"the address to run reloadproxy")
 	flag.StringVar(&serverAddr, "server", "http://localhost:9000",
 		"the address where the server is set to run")
+	flag.IntVar(&interval, "interval", 500, "the interval to check for changes (milliseconds)")
 	flag.Parse()
 
 	if serverFile == "" {
@@ -127,13 +130,13 @@ func startWatching(watcher chan struct{}, cmd *exec.Cmd, done chan struct{}) {
 		}
 
 		if len(files) != len(newfiles) {
-			files = newfiles
 			if !first {
 				// Restart the server.
 				restartServer()
 			} else {
 				first = false
 			}
+			files = newfiles
 			watcher <- struct{}{}
 		} else {
 			for i, newfile := range newfiles {
@@ -146,7 +149,7 @@ func startWatching(watcher chan struct{}, cmd *exec.Cmd, done chan struct{}) {
 			}
 		}
 
-		time.Sleep(time.Second * 1)
+		time.Sleep(time.Millisecond * time.Duration(interval))
 	}
 
 	close(done)
