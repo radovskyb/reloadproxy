@@ -13,5 +13,5 @@ restarts your server and displays your changes in real time in your browser.
 
 # Example:
 
-![](https://github.com/radovskyb/reloadproxy/blob/master/reloadproxy.gif)
+![reloadproxy.gif](https://github.com/radovskyb/reloadproxy/blob/master/reloadproxy.gif)
 
