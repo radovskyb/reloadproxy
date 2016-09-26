@@ -240,13 +240,21 @@ func restartServer() {
 	startServer()
 }
 
-const rpTemplateSrc = `<!DOCTYPE html><html><head>
-<meta charset="UTF-8"> <title>Reload Proxy</title>
-<script src="https://code.jquery.com/jquery-3.1.1.min.js"></script><script>
+const rpTemplateSrc = `<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Reload Proxy</title>
+<script src="https://code.jquery.com/jquery-3.1.1.min.js"></script>
+<script>
 $(document).ready(function() {
 	var ws = new WebSocket("ws://{{.Address}}/{{.SocketAddr}}/{{.Path}}");
 	ws.onmessage = function(e) {
 		$("body").html(e.data);
 	};
 });
-</script></head><body></body></html>`
+</script>
+</head>
+<body>
+</body>
+</html>`
