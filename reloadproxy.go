@@ -1,77 +1,65 @@
-package reloadproxy
+package main
 
 import (
 	"html/template"
 	"io/ioutil"
+	"log"
+	"math/rand"
 	"net/http"
-	"os"
 	"strings"
 	"time"
 
 	"github.com/gorilla/websocket"
 )
 
-const rpTemplateSrc = `<!DOCTYPE html>
-<html>
-<head>
-	<meta charset="UTF-8">
-	<title>Reload Proxy</title>
-	<script src="https://code.jquery.com/jquery-3.1.1.min.js"></script> 
-	<script>
-		$(document).ready(function() {
-			var ws = new WebSocket("ws://localhost:9000/reloadproxy/ws/{{.Path}}");
-			ws.onmessage = function(e) {
-				$("body").html(e.data);
-			};
-		});
-	</script>
-</head>
-<body>
-</body>
-</html>`
-
 var upgrader = websocket.Upgrader{}
 var rpTemplate = template.Must(template.New("rpTemplate").Parse(rpTemplateSrc))
 var watcher = make(chan struct{})
 
-func init() {
+var address = "http://localhost:9001"
+var serverAddr = "http://localhost:9000"
+var dir = "/Users/Benjamin/Workspace/go/src/github.com/radovskyb/reloadproxy/testserver"
+
+var socketAddr string
+
+func main() {
+	// Seed the random generator.
+	rand.Seed(time.Now().UnixNano())
+
+	// Generate a random string for the WebSocket url location to avoid conflicts
+	// with the proxied server paths.
+	alphaRunes := []rune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
+	b := make([]rune, 12)
+	for i := range b {
+		b[i] = alphaRunes[rand.Intn(len(alphaRunes))]
+	}
+	socketAddr = string(b)
+
+	listenAddr := strings.SplitAfter(address, "://")[1]
+
 	http.HandleFunc("/reloadproxy/", func(w http.ResponseWriter, r *http.Request) {
 		data := struct {
-			Path string
+			SocketAddr string
+			Address    string
+			Path       string
 		}{
-			strings.TrimPrefix(r.URL.Path, "/reloadproxy/"),
+			SocketAddr: socketAddr,
+			Address:    listenAddr,
+			Path:       strings.TrimPrefix(r.URL.Path, "/reloadproxy/"),
 		}
 		if err := rpTemplate.Execute(w, data); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 		}
 	})
 
-	var cwd string
-	http.HandleFunc("/reloadproxy/ws/", func(w http.ResponseWriter, r *http.Request) {
-		// Get the working directory in the handler instead of on during init,
-		// so if the folder get's changed or a different server is started on
-		// the same host under a differnt folder instead, it is tracked.
-		var err error
-		cwd, err = os.Getwd()
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
+	http.HandleFunc("/reloadproxy/"+socketAddr+"/", ReloadProxyHandler)
 
-		ReloadProxyHandler(w, r)
-	})
+	go startWatching(watcher)
 
-	go startWatching(watcher, cwd)
+	log.Fatal(http.ListenAndServe(listenAddr, nil))
 }
 
 func ReloadProxyHandler(w http.ResponseWriter, r *http.Request) {
-	var scheme string
-	if r.TLS != nil {
-		scheme = "https://"
-	} else {
-		scheme = "http://"
-	}
-
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -91,11 +79,19 @@ func ReloadProxyHandler(w http.ResponseWriter, r *http.Request) {
 	}(conn)
 
 	go func(conn *websocket.Conn) {
+		path := strings.TrimPrefix(r.URL.Path, "/reloadproxy/"+socketAddr)
+
+		// Write the page the first time it's visited.
+		err := conn.WriteMessage(websocket.TextMessage, getPage(serverAddr+path))
+		if err != nil {
+			conn.Close()
+			return
+		}
+
 		for {
 			select {
 			case <-watcher:
-				path := strings.TrimPrefix(r.URL.Path, "/reloadproxy/ws")
-				err := conn.WriteMessage(websocket.TextMessage, reloadPage(scheme+r.Host+path))
+				err := conn.WriteMessage(websocket.TextMessage, getPage(serverAddr+path))
 				if err != nil {
 					conn.Close()
 					return
@@ -107,14 +103,48 @@ func ReloadProxyHandler(w http.ResponseWriter, r *http.Request) {
 	}(conn)
 }
 
-func startWatching(watcher chan struct{}, dir string) {
+func startWatching(watcher chan struct{}) {
+	// Show the page for the first time.
+	watcher <- struct{}{}
+
+	files, err := ioutil.ReadDir(dir)
+	if err != nil {
+		log.Fatalln(err)
+	}
+	numFiles := len(files)
 	for {
-		watcher <- struct{}{}
 		time.Sleep(time.Second)
+
+		// Check if the number of files is different.
+		files, err = ioutil.ReadDir(dir)
+		if err != nil {
+			log.Fatalln(err)
+		}
+		if len(files) != numFiles {
+			// Reload the page.
+			watcher <- struct{}{}
+
+			// Update numFiles to be len(files)
+			numFiles = len(files)
+
+			// Continue the file watching loop.
+			continue
+		}
+
+		// 		// Run a simple filepath.Walk and check if any files have been changed
+		// 		// or modified.
+		// 		if err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+		// add to map so can check again after.
+		// 			return nil
+		// 		}); err != nil {
+		// 			errc <- err
+		// 		}
+		// 		watcher <- struct{}{}
+		// time.Sleep(time.Second)
 	}
 }
 
-func reloadPage(path string) []byte {
+func getPage(path string) []byte {
 	res, err := http.Get(path)
 	if err != nil {
 		return []byte(err.Error())
@@ -126,3 +156,14 @@ func reloadPage(path string) []byte {
 	}
 	return slurp
 }
+
+const rpTemplateSrc = `<!DOCTYPE html><html><head>
+<meta charset="UTF-8"> <title>Reload Proxy</title>
+<script src="https://code.jquery.com/jquery-3.1.1.min.js"></script><script>
+$(document).ready(function() {
+	var ws = new WebSocket("ws://{{.Address}}/reloadproxy/{{.SocketAddr}}/{{.Path}}");
+	ws.onmessage = function(e) {
+		$("body").html(e.data);
+	};
+});
+</script></head><body></body></html>`
