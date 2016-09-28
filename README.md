@@ -1,5 +1,7 @@
 # reloadproxy
 
+## Currently being re-written.
+
 `reloadproxy` restarts your server and reloads what's in your browser, anytime changes are made.
 
 `reloadproxy` is a simple Go application that's a reverse proxy to your Go server. It also does cool stuffs. (See gif below)
