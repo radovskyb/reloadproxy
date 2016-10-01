@@ -1,6 +1,6 @@
 # reloadproxy
 
-## Currently being re-written.
+## Needs re-writing.
 
 `reloadproxy` restarts your server and reloads what's in your browser, anytime changes are made.
 
