@@ -123,6 +123,9 @@ func startWatching(watcher chan struct{}, cmd *exec.Cmd, done chan struct{}) {
 	for {
 		newfiles := []os.FileInfo{}
 		if err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+			if err != nil {
+				return err
+			}
 			newfiles = append(newfiles, info)
 			return nil
 		}); err != nil {
