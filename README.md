@@ -1,7 +1,7 @@
 # reloadproxy
 `reloadproxy` restarts your server and reloads what's in your browser, anytime changes are detected.
 
-## `reloadproxy` is currently only a proof of concept.
+### reloadproxy is currently only a proof of concept.
 
 Anytime your files are modified or any files are added or deleted, `reloadproxy` automatically restarts your server and displays your changes in real time in your browser.
 
