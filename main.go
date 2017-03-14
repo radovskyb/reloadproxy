@@ -34,7 +34,7 @@ var (
 )
 
 func main() {
-	flag.StringVar(&serverFile, "file", "", "the location of the Go server file")
+	flag.StringVar(&serverFile, "file", "main.go", "the location of the Go server file")
 	flag.StringVar(&dir, "dir", "", "the directory to watch for changes (default is the server's directory)")
 	flag.StringVar(&address, "addr", "http://localhost:9001",
 		"the address to run reloadproxy")
@@ -43,15 +43,12 @@ func main() {
 	flag.StringVar(&interval, "interval", "100ms", "the interval duration to check for changes")
 	flag.Parse()
 
-	if serverFile == "" {
-		_, err := os.Stat("main.go")
-		if err != nil {
-			fmt.Println("Enter the location of the Go server file. (e.g. main.go)\n")
-			flag.PrintDefaults()
-			fmt.Println()
-			os.Exit(1)
-		}
-		serverFile = "main.go"
+	_, err := os.Stat(serverFile)
+	if err != nil {
+		fmt.Println("Enter the location of the Go server file. (e.g. main.go)\n")
+		flag.PrintDefaults()
+		fmt.Println()
+		os.Exit(1)
 	}
 
 	if dir == "" {
