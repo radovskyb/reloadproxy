@@ -1,7 +1,7 @@
 # reloadproxy
 `reloadproxy` restarts your server and reloads what's in your browser, anytime changes are detected.
 
-## Needs re-writing.
+## `reloadproxy` is currently only a proof of concept.
 
 Anytime your files are modified or any files are added or deleted, `reloadproxy` automatically restarts your server and displays your changes in real time in your browser.
 
@@ -21,5 +21,3 @@ reloadproxy main.go
 # Example
 
 ![reloadproxy.gif](https://github.com/radovskyb/reloadproxy/blob/master/reloadproxy.gif)
-
-`reloadproxy` is currently just a prototype built for fun.
