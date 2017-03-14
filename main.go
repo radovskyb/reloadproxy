@@ -19,16 +19,16 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/radovskyb/watcher"
 )
 
 var (
 	rpTemplate = template.Must(template.New("rpTemplate").Parse(rpTemplateSrc))
 	upgrader   = websocket.Upgrader{}
-	watcher    = make(chan struct{})
 
-	serverFile, socketAddr, serverAddr, address, dir string
+	wt *watcher.Watcher
 
-	interval int
+	serverFile, socketAddr, serverAddr, address, dir, interval string
 
 	cmd *exec.Cmd
 )
@@ -40,19 +40,29 @@ func main() {
 		"the address to run reloadproxy")
 	flag.StringVar(&serverAddr, "server", "http://localhost:9000",
 		"the address where the server is set to run")
-	flag.IntVar(&interval, "interval", 500, "the interval to check for changes (milliseconds)")
+	flag.StringVar(&interval, "interval", "100ms", "the interval duration to check for changes")
 	flag.Parse()
 
 	if serverFile == "" {
-		fmt.Println("Enter the location of the Go server file. (e.g. main.go)\n")
-		flag.PrintDefaults()
-		fmt.Println()
-		os.Exit(1)
+		_, err := os.Stat("main.go")
+		if err != nil {
+			fmt.Println("Enter the location of the Go server file. (e.g. main.go)\n")
+			flag.PrintDefaults()
+			fmt.Println()
+			os.Exit(1)
+		}
+		serverFile = "main.go"
 	}
 
 	if dir == "" {
 		dir = filepath.Dir(serverFile)
 	}
+
+	wt = watcher.New()
+	if err := wt.AddRecursive(dir); err != nil {
+		log.Fatalln(err)
+	}
+	wt.SetMaxEvents(1)
 
 	// Seed the random generator.
 	rand.Seed(time.Now().UnixNano())
@@ -101,61 +111,25 @@ func main() {
 	go func() {
 		<-c
 		killServer()
+		wt.Close()
 		os.Exit(1)
 	}()
 
 	// Start reloadproxy's watcher.
-	done := make(chan struct{})
-	go startWatching(watcher, cmd, done)
-	<-done
-
-	wg.Wait()
-}
-
-func startWatching(watcher chan struct{}, cmd *exec.Cmd, done chan struct{}) {
-	first := true
-
-	// Show the page for the first time.
-	watcher <- struct{}{}
-
-	files := []os.FileInfo{}
-
-	for {
-		newfiles := []os.FileInfo{}
-		if err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
-			if err != nil {
-				return err
-			}
-			newfiles = append(newfiles, info)
-			return nil
-		}); err != nil {
-			log.Fatalln(err)
-		}
-
-		if len(files) != len(newfiles) {
-			if !first {
-				// Restart the server.
-				restartServer()
-			} else {
-				first = false
-			}
-			files = newfiles
-			watcher <- struct{}{}
-		} else {
-			for i, newfile := range newfiles {
-				if newfile.ModTime() != files[i].ModTime() {
-					// Restart the server.
-					restartServer()
-					files = newfiles
-					watcher <- struct{}{}
-				}
-			}
-		}
-
-		time.Sleep(time.Millisecond * time.Duration(interval))
+	dur, err := time.ParseDuration(interval)
+	if err != nil {
+		log.Fatalln(err)
 	}
 
-	close(done)
+	go func() {
+		err := wt.Start(dur)
+		if err != nil {
+			log.Fatalln(err)
+		}
+	}()
+
+	<-wt.Closed
+	wg.Wait()
 }
 
 func ReloadProxyHandler(w http.ResponseWriter, r *http.Request) {
@@ -189,7 +163,10 @@ func ReloadProxyHandler(w http.ResponseWriter, r *http.Request) {
 
 		for {
 			select {
-			case <-watcher:
+			case <-wt.Event:
+				fmt.Println("reloading")
+				restartServer()
+
 				err := conn.WriteMessage(websocket.TextMessage, getPage(serverAddr+path))
 				if err != nil {
 					conn.Close()
@@ -213,8 +190,8 @@ GET:
 		time.Sleep(500 * time.Millisecond)
 		goto GET
 	}
-	defer res.Body.Close()
 	slurp, err := ioutil.ReadAll(res.Body)
+	res.Body.Close()
 	if err != nil {
 		return []byte(err.Error())
 	}
